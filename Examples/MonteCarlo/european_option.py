@@ -73,7 +73,9 @@ class EuropeanOption:
         self.mode = mode
 
         # initializing useful math quantities
-        self.mu = (self.rate - 0.5 * self.sigma ** 2) * self.expiry + np.log(self.initial_asset_price)
+        self.mu = (self.rate - 0.5 * self.sigma ** 2) * self.expiry + np.log(
+            self.initial_asset_price
+        )
         self.mean = np.exp(self.mu + 0.5 * self.expiry * self.sigma ** 2)  # -1
         self.variance = (np.exp(self.expiry * self.sigma ** 2) - 1) * np.exp(
             2 * self.mu + self.expiry * self.sigma ** 2
@@ -94,12 +96,14 @@ class EuropeanOption:
 
     # Classical European Black-Scholes Model
     def _bsm(self):
-        d1 = (np.log(self.initial_asset_price / self.strike) + (self.rate + self.sigma ** 2 / 2) * self.expiry) / (
-            self.sigma * np.sqrt(self.expiry)
-        )
-        d2 = (np.log(self.initial_asset_price / self.strike) + (self.rate - self.sigma ** 2 / 2) * self.expiry) / (
-            self.sigma * np.sqrt(self.expiry)
-        )
+        d1 = (
+            np.log(self.initial_asset_price / self.strike)
+            + (self.rate + self.sigma ** 2 / 2) * self.expiry
+        ) / (self.sigma * np.sqrt(self.expiry))
+        d2 = (
+            np.log(self.initial_asset_price / self.strike)
+            + (self.rate - self.sigma ** 2 / 2) * self.expiry
+        ) / (self.sigma * np.sqrt(self.expiry))
         if self.option_type == "C":
             self.bsm = (self.initial_asset_price * norm.cdf(d1)) - (
                 self.strike * np.exp(-self.rate * self.expiry) * norm.cdf(d2)
@@ -151,20 +155,31 @@ class EuropeanOption:
         for i in range(len(self.asset_distribution)):
             if self.asset_distribution[i] > self.strike and self.option_type == "C":
                 payoff_angle[i] = np.arcsin(
-                    np.sqrt((self.asset_distribution[i] - self.strike) / (self.asset_distribution[len(self.asset_distribution) - 1] - self.strike))
+                    np.sqrt(
+                        (self.asset_distribution[i] - self.strike)
+                        / (
+                            self.asset_distribution[len(self.asset_distribution) - 1]
+                            - self.strike
+                        )
+                    )
                 )
                 payoff_final[i] = self.asset_distribution[i] - self.strike
                 count += 1
             if self.asset_distribution[i] < self.strike and self.option_type == "P":
                 payoff_angle[i] = np.arcsin(
-                    np.sqrt((self.strike - self.asset_distribution[i]) / (self.strike - self.asset_distribution[0]))
+                    np.sqrt(
+                        (self.strike - self.asset_distribution[i])
+                        / (self.strike - self.asset_distribution[0])
+                    )
                 )
                 payoff_final[i] = self.strike - self.asset_distribution[i]
                 count += 1
         self._count = count
 
         if self.option_type == "C":
-            self._asset_limit = self.asset_distribution[len(self.asset_distribution) - 1]
+            self._asset_limit = self.asset_distribution[
+                len(self.asset_distribution) - 1
+            ]
         if self.option_type == "P":
             self._asset_limit = self.asset_distribution[0]
 
@@ -321,7 +336,11 @@ class EuropeanOption:
         # make schedule if it is not given
         if self.schedule is None:
             self.schedule = make_schedule(
-                self.epsilon, self.schedule_type, self.max_depth, self.beta, self.n_shots
+                self.epsilon,
+                self.schedule_type,
+                self.max_depth,
+                self.beta,
+                self.n_shots,
             )
 
         # compute total number of oracle calls and shots
