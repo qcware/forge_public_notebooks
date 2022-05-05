@@ -17,13 +17,13 @@ class EuropeanOption:
     """Quantum European Option pricing class
     .
     Init args:
-        nAssetPrices : Number of different Asset Prices generated
-        S0 : Initial Asset Price
-        K : Strike
-        r : interest rate
+        n_asset_prices : Number of different Asset Prices generated
+        initial_asset_price : Initial Asset Price
+        strike : Strike
+        rate : interest rate
         sigma : Volatility
-        T : Time to maturity
-        optionType : 'C' = European Call Option, 'P' = European Put Option
+        expiry : Time to expiry
+        option_type : 'C' = European Call Option, 'P' = European Put Option
         epsilon : precision parameter for the estimate
         mode : 'parallel' = optimized depth, 'sequential' = optimized number of qubits
 
@@ -33,58 +33,61 @@ class EuropeanOption:
             self.initial_circuit : 'oracle' circuit A
             self.iteration_circuit : iteration circuit (S_chi A^{inv} S_0 A) used for AE
 
-        self.samples : number of samples
+        self.oracle_calls : number of calls to the oracle (pricing circuit)
+        self.shots : number of shots run
         self.theta : estimate of angle theta
         self.expectation : estimate of expectation of sin(theta)**2
         self.price : final estimated price
 
         self.schedule : schedule used for AE
-        self.scheduleType : scheduleType
-        self.maxDepth : maxDepth of circuit
+        self.schedule_type : scheduleType
+        self.max_depth : maxDepth of circuit
         self.beta : beta parameter for power-law schedule
-        self.nShots : nShots for each circuit
+        self.n_shots : number of shots for each circuit in the schedule
 
 
     """
 
     def __init__(
         self,
-        nAssetPrices,
-        S0,
-        K,
-        r,
+        n_asset_prices,
+        initial_asset_price,
+        strike,
+        rate,
         sigma,
-        T,
-        optionType,
+        expiry,
+        option_type,
         epsilon=0.005,
         mode="sequential",
     ):
 
         # initializing classical parameters
-        self.nAssetPrices = nAssetPrices
-        self.S0 = S0
-        self.K = K
-        self.r = r
+        self.n_asset_prices = n_asset_prices
+        self.initial_asset_price = initial_asset_price
+        self.strike = strike
+        self.rate = rate
         self.sigma = sigma
-        self.T = T
-        self.optionType = optionType
+        self.expiry = expiry
+        self.option_type = option_type
         self.epsilon = epsilon
         self.mode = mode
 
         # initializing useful math quantities
-        self.mu = (self.r - 0.5 * self.sigma ** 2) * self.T + np.log(self.S0)
-        self.mean = np.exp(self.mu + 0.5 * self.T * self.sigma ** 2)  # -1
-        self.variance = (np.exp(self.T * self.sigma ** 2) - 1) * np.exp(
-            2 * self.mu + self.T * self.sigma ** 2
+        self.mu = (self.rate - 0.5 * self.sigma ** 2) * self.expiry + np.log(
+            self.initial_asset_price
         )
-        self.S = np.linspace(
+        self.mean = np.exp(self.mu + 0.5 * self.expiry * self.sigma ** 2)  # -1
+        self.variance = (np.exp(self.expiry * self.sigma ** 2) - 1) * np.exp(
+            2 * self.mu + self.expiry * self.sigma ** 2
+        )
+        self.asset_distribution = np.linspace(
             max(self.mean - 2 * np.sqrt(self.variance), 0),
             self.mean + 2 * np.sqrt(self.variance),
-            self.nAssetPrices,
+            self.n_asset_prices,
         )
 
         # computing Black-Scholes model price
-        self.BSM = self._BSM()
+        self.bsm = self._bsm()
 
         # creating the quantum circuits
         self.probability_loader_circuit = self._generate_probability_loader_circuit()
@@ -92,50 +95,52 @@ class EuropeanOption:
         self.iteration_circuit = self._generate_iteration_circuit()
 
     # Classical European Black-Scholes Model
-    def _BSM(self):
-        d1 = (np.log(self.S0 / self.K) + (self.r + self.sigma ** 2 / 2) * self.T) / (
-            self.sigma * np.sqrt(self.T)
-        )
-        d2 = (np.log(self.S0 / self.K) + (self.r - self.sigma ** 2 / 2) * self.T) / (
-            self.sigma * np.sqrt(self.T)
-        )
-        if self.optionType == "C":
-            self.BSM = (self.S0 * norm.cdf(d1)) - (
-                self.K * np.exp(-self.r * self.T) * norm.cdf(d2)
+    def _bsm(self):
+        d1 = (
+            np.log(self.initial_asset_price / self.strike)
+            + (self.rate + self.sigma ** 2 / 2) * self.expiry
+        ) / (self.sigma * np.sqrt(self.expiry))
+        d2 = (
+            np.log(self.initial_asset_price / self.strike)
+            + (self.rate - self.sigma ** 2 / 2) * self.expiry
+        ) / (self.sigma * np.sqrt(self.expiry))
+        if self.option_type == "C":
+            self.bsm = (self.initial_asset_price * norm.cdf(d1)) - (
+                self.strike * np.exp(-self.rate * self.expiry) * norm.cdf(d2)
             )
-        elif self.optionType == "P":
-            self.BSM = -(self.S0 * norm.cdf(-d1)) + (
-                self.K * np.exp(-self.r * self.T) * norm.cdf(-d2)
+        elif self.option_type == "P":
+            self.bsm = -(self.initial_asset_price * norm.cdf(-d1)) + (
+                self.strike * np.exp(-self.rate * self.expiry) * norm.cdf(-d2)
             )
         else:
-            print("optionType must be " "C" " or " "P")
-        return self.BSM
+            print("option_type must be " "C" " or " "P")
+        return self.bsm
 
     # Function to generate a normalized Normal Law
-    def _normalizedLogNormal(self):
+    def _normalized_lognormal(self):
 
-        dS = self.S[1] - self.S[0]
-        normalLaw = (
+        ds = self.asset_distribution[1] - self.asset_distribution[0]
+        normal_law = (
             1
-            / (self.S * self.sigma * np.sqrt(2 * np.pi * self.T))
+            / (self.asset_distribution * self.sigma * np.sqrt(2 * np.pi * self.expiry))
             * np.exp(
-                -np.power(np.log(self.S) - self.mu, 2.0)
-                / (2 * np.power(self.sigma, 2.0) * self.T)
+                -np.power(np.log(self.asset_distribution) - self.mu, 2.0)
+                / (2 * np.power(self.sigma, 2.0) * self.expiry)
             )
         )
-        normalizedLogNormal = np.sqrt(normalLaw * dS / np.sum(normalLaw * dS))
+        normalized_lognormal = np.sqrt(normal_law * ds / np.sum(normal_law * ds))
 
-        return normalizedLogNormal
+        return normalized_lognormal
 
     # Generate the circuit for probability distribution
     def _generate_probability_loader_circuit(self):
 
         # Generate probability Distributor
-        normalizedLogNormal = self._normalizedLogNormal()
+        normalized_lognormal = self._normalized_lognormal()
 
         # Load the probability Distribution in the quantum circuit via the data loader
         self.probability_loader_circuit = qio.loader(
-            normalizedLogNormal, mode="parallel", initial=True
+            normalized_lognormal, mode="parallel", initial=True
         )
         # print('none',self.probability_loader_circuit)
         return self.probability_loader_circuit
@@ -144,116 +149,127 @@ class EuropeanOption:
     def _generate_initial_circuit(self):
 
         # Computation of angles needed for the payoff
-        payoffFinal = np.zeros(len(self.S))
-        payoffAngle = np.zeros(len(self.S))
+        payoff_final = np.zeros(len(self.asset_distribution))
+        payoff_angle = np.zeros(len(self.asset_distribution))
         count = 0
-        for i in range(len(self.S)):
-            if self.S[i] > self.K and self.optionType == "C":
-                payoffAngle[i] = np.arcsin(
-                    np.sqrt((self.S[i] - self.K) / (self.S[len(self.S) - 1] - self.K))
+        for i in range(len(self.asset_distribution)):
+            if self.asset_distribution[i] > self.strike and self.option_type == "C":
+                payoff_angle[i] = np.arcsin(
+                    np.sqrt(
+                        (self.asset_distribution[i] - self.strike)
+                        / (
+                            self.asset_distribution[len(self.asset_distribution) - 1]
+                            - self.strike
+                        )
+                    )
                 )
-                payoffFinal[i] = self.S[i] - self.K
+                payoff_final[i] = self.asset_distribution[i] - self.strike
                 count += 1
-            if self.S[i] < self.K and self.optionType == "P":
-                payoffAngle[i] = np.arcsin(
-                    np.sqrt((self.K - self.S[i]) / (self.K - self.S[0]))
+            if self.asset_distribution[i] < self.strike and self.option_type == "P":
+                payoff_angle[i] = np.arcsin(
+                    np.sqrt(
+                        (self.strike - self.asset_distribution[i])
+                        / (self.strike - self.asset_distribution[0])
+                    )
                 )
-                payoffFinal[i] = self.K - self.S[i]
+                payoff_final[i] = self.strike - self.asset_distribution[i]
                 count += 1
         self._count = count
 
-        if self.optionType == "C":
-            self._assetLimit = self.S[len(self.S) - 1]
-        if self.optionType == "P":
-            self._assetLimit = self.S[0]
+        if self.option_type == "C":
+            self._asset_limit = self.asset_distribution[
+                len(self.asset_distribution) - 1
+            ]
+        if self.option_type == "P":
+            self._asset_limit = self.asset_distribution[0]
 
         circ = quasar.Circuit()
         circ = self.probability_loader_circuit.copy()
         # Generate the gate for the rotation needed for Payoff Computation
         for i in range(count):
-            if self.optionType == "C" and self.mode == "sequential":
+            if self.option_type == "C" and self.mode == "sequential":
                 circ.add_gate(
                     quasar.Gate.Ry(
-                        theta=payoffAngle[self.nAssetPrices - count + i] / 2
+                        theta=payoff_angle[self.n_asset_prices - count + i] / 2
                     ),
-                    self.nAssetPrices,
+                    self.n_asset_prices,
                     time_placement="next",
                 )
                 circ.add_gate(
                     quasar.Gate.CX,
-                    (self.nAssetPrices - count + i, self.nAssetPrices),
+                    (self.n_asset_prices - count + i, self.n_asset_prices),
                     time_placement="next",
                 )
                 circ.add_gate(
                     quasar.Gate.Ry(
-                        theta=-payoffAngle[self.nAssetPrices - count + i] / 2
+                        theta=-payoff_angle[self.n_asset_prices - count + i] / 2
                     ),
-                    self.nAssetPrices,
+                    self.n_asset_prices,
                     time_placement="next",
                 )
                 circ.add_gate(
                     quasar.Gate.CX,
-                    (self.nAssetPrices - count + i, self.nAssetPrices),
+                    (self.n_asset_prices - count + i, self.n_asset_prices),
                     time_placement="next",
                 )
-            if self.optionType == "P" and self.mode == "sequential":
+            if self.option_type == "P" and self.mode == "sequential":
                 circ.add_gate(
-                    quasar.Gate.Ry(theta=payoffAngle[i] / 2),
-                    self.nAssetPrices,
-                    time_placement="next",
-                )
-                circ.add_gate(
-                    quasar.Gate.CX, (i, self.nAssetPrices), time_placement="next"
-                )
-                circ.add_gate(
-                    quasar.Gate.Ry(theta=-payoffAngle[i] / 2),
-                    self.nAssetPrices,
+                    quasar.Gate.Ry(theta=payoff_angle[i] / 2),
+                    self.n_asset_prices,
                     time_placement="next",
                 )
                 circ.add_gate(
-                    quasar.Gate.CX, (i, self.nAssetPrices), time_placement="next"
+                    quasar.Gate.CX, (i, self.n_asset_prices), time_placement="next"
                 )
-            if self.optionType == "C" and self.mode == "parallel":
+                circ.add_gate(
+                    quasar.Gate.Ry(theta=-payoff_angle[i] / 2),
+                    self.n_asset_prices,
+                    time_placement="next",
+                )
+                circ.add_gate(
+                    quasar.Gate.CX, (i, self.n_asset_prices), time_placement="next"
+                )
+            if self.option_type == "C" and self.mode == "parallel":
                 circ.add_gate(
                     quasar.Gate.Ry(
-                        theta=payoffAngle[self.nAssetPrices - count + i] / 2
+                        theta=payoff_angle[self.n_asset_prices - count + i] / 2
                     ),
-                    self.nAssetPrices + i,
+                    self.n_asset_prices + i,
                     time_placement="next",
                 )
                 circ.add_gate(
                     quasar.Gate.CX,
-                    (self.nAssetPrices - count + i, self.nAssetPrices + i),
+                    (self.n_asset_prices - count + i, self.n_asset_prices + i),
                     time_placement="next",
                 )
                 circ.add_gate(
                     quasar.Gate.Ry(
-                        theta=-payoffAngle[self.nAssetPrices - count + i] / 2
+                        theta=-payoff_angle[self.n_asset_prices - count + i] / 2
                     ),
-                    self.nAssetPrices + i,
+                    self.n_asset_prices + i,
                     time_placement="next",
                 )
                 circ.add_gate(
                     quasar.Gate.CX,
-                    (self.nAssetPrices - count + i, self.nAssetPrices + i),
+                    (self.n_asset_prices - count + i, self.n_asset_prices + i),
                     time_placement="next",
                 )
-            if self.optionType == "P" and self.mode == "parallel":
+            if self.option_type == "P" and self.mode == "parallel":
                 circ.add_gate(
-                    quasar.Gate.Ry(theta=payoffAngle[i] / 2),
-                    self.nAssetPrices + i,
-                    time_placement="next",
-                )
-                circ.add_gate(
-                    quasar.Gate.CX, (i, self.nAssetPrices + i), time_placement="next"
-                )
-                circ.add_gate(
-                    quasar.Gate.Ry(theta=-payoffAngle[i] / 2),
-                    self.nAssetPrices + i,
+                    quasar.Gate.Ry(theta=payoff_angle[i] / 2),
+                    self.n_asset_prices + i,
                     time_placement="next",
                 )
                 circ.add_gate(
-                    quasar.Gate.CX, (i, self.nAssetPrices + i), time_placement="next"
+                    quasar.Gate.CX, (i, self.n_asset_prices + i), time_placement="next"
+                )
+                circ.add_gate(
+                    quasar.Gate.Ry(theta=-payoff_angle[i] / 2),
+                    self.n_asset_prices + i,
+                    time_placement="next",
+                )
+                circ.add_gate(
+                    quasar.Gate.CX, (i, self.n_asset_prices + i), time_placement="next"
                 )
 
         self.initial_circuit = circ.copy()
@@ -267,24 +283,24 @@ class EuropeanOption:
 
         # Define the Target Qubits
         if self.mode == "parallel":
-            targetQubits = list(
-                range(self.nAssetPrices, self.nAssetPrices + self._count)
+            target_qubits = list(
+                range(self.n_asset_prices, self.n_asset_prices + self._count)
             )
         elif self.mode == "sequential":
-            targetQubits = [self.nAssetPrices]
+            target_qubits = [self.n_asset_prices]
 
-        self.targetQubits = targetQubits
+        self.target_qubits = target_qubits
 
         # Define the target states
-        targetStates = [2 ** k for k in range(0, len(targetQubits))]
-        self.targetStates = targetStates
+        target_states = [2 ** k for k in range(0, len(target_qubits))]
+        self.target_states = target_states
 
         minusA = circ.slice(
             times=list(range(1, circ.ntime))
         )  # The minus phase doesn't matter, we put A itself, removing the X gate in the beginning
 
         S_chi = quasar.Circuit()
-        for qubit in targetQubits:
+        for qubit in target_qubits:
             S_chi.Z(qubit)
 
         A_inverse = circ.adjoint().slice(
@@ -292,7 +308,7 @@ class EuropeanOption:
         )  # removing the X gate in the end
 
         S_0 = quasar.Circuit()
-        for qubit in targetQubits:
+        for qubit in target_qubits:
             S_0.CZ(0, qubit)  # S_0 operator
         S_0.Z(0)
 
@@ -305,39 +321,47 @@ class EuropeanOption:
     def price(
         self,
         schedule=None,
-        scheduleType="linear",
-        maxDepth=int(10),
+        schedule_type="linear",
+        max_depth=int(10),
         beta=0.3,
-        nShots=int(10),
+        n_shots=int(10),
     ):
 
         self.schedule = schedule
-        self.scheduleType = scheduleType
-        self.maxDepth = maxDepth
+        self.schedule_type = schedule_type
+        self.max_depth = max_depth
         self.beta = beta
-        self.nShots = nShots
+        self.n_shots = n_shots
 
         # make schedule if it is not given
         if self.schedule is None:
             self.schedule = make_schedule(
-                self.epsilon, self.scheduleType, self.maxDepth, self.beta, self.nShots
+                self.epsilon,
+                self.schedule_type,
+                self.max_depth,
+                self.beta,
+                self.n_shots,
             )
 
-        # compute total number of samples
-        if self.nShots is not None:
-            samples = 0
-            for [power, nShots] in self.schedule:
-                samples += nShots * (2 * power + 1)
-            self.samples = samples
+        # compute total number of oracle calls and shots
+        if self.n_shots is not None:
+            oracle_calls_counter = 0
+            shots_counter = 0
+            for [power, n_shots] in self.schedule:
+                oracle_calls_counter += n_shots * (2 * power + 1)
+                shots_counter += n_shots
+            self.oracle_calls = oracle_calls_counter
+            self.shots = shots_counter
         else:
-            self.samples = None
+            self.oracle_calls = None
+            self.shots = None
 
         # get the quantum results
         self.results = run_schedule(
             self.initial_circuit,
             self.iteration_circuit,
-            self.targetQubits,
-            self.targetStates,
+            self.target_qubits,
+            self.target_states,
             self.schedule,
         )
 
@@ -349,10 +373,10 @@ class EuropeanOption:
 
         # compute the quantum price
         price = 0
-        if self.optionType == "C":
-            price = self.expectation * (self._assetLimit - self.K)
-        if self.optionType == "P":
-            price = self.expectation * (self.K - self._assetLimit)
-        self.quantumprice = price
+        if self.option_type == "C":
+            price = self.expectation * (self._asset_limit - self.strike)
+        if self.option_type == "P":
+            price = self.expectation * (self.strike - self._asset_limit)
+        self.quantum_price = price
 
-        return self.quantumprice
+        return self.quantum_price
